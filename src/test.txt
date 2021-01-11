@@ -1,0 +1,8 @@
+b.a*.c
+
+baaaaac
+bc
+abc
+bcc
+bac
+acccaba

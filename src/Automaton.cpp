@@ -1,7 +1,7 @@
 #include "Automaton.hpp"
 #include <stack>
-
-#define EPSILON (char)238
+#include <sstream>
+#include "RegexUtils.hpp"
 
 void Automaton::copy(const Automaton& other) {
     if (this != &other) {
@@ -14,18 +14,15 @@ void Automaton::copy(const Automaton& other) {
     }
 }
 
-Automaton::Automaton(std::vector<TransitionState> trans) {
-    for (TransitionState transition : trans) {
-        EdgeState edge = transition.first;
-        TransitionLetters letters = transition.second;
-        
-        State state1 = edge.first;
-        State state2 = edge.second;
+void Automaton::updateNeighbours() {
+    this -> neighbours.clear();
 
-        addTransition(std::make_pair(std::get<0>(state1), std::get<0>(state2)), letters);
-        addState(std::get<0>(state1), std::get<1>(state1), std::get<2>(state1));
-        addState(std::get<0>(state2), std::get<1>(state2), std::get<2>(state2));
+    for (int state : states) {
+        neighbours[state];
+    }
 
+    for (auto t : transitions) {
+        neighbours.at(t.first.first).insert(t.first.second);
     }
 }
 
@@ -48,6 +45,10 @@ std::set<int> Automaton::getFinalStates() const {
 
 Automaton::Transitions Automaton::getTransitions() const {
     return this -> transitions;
+}
+
+std::map<int, std::set<int>> Automaton::getNeighbours() const {
+    return this -> neighbours;
 }
 
 void Automaton::setStates(std::set<int> other) {
@@ -75,7 +76,7 @@ void Automaton::addState(const int state, bool beginning = false, bool final = f
         finalStates.insert(state);
     }
 
-    neighbours[state];
+    updateNeighbours();
 }
 
 void Automaton::addBeginningState(const int state) {
@@ -91,7 +92,10 @@ void Automaton::addTransition(Edge edge, TransitionLetters letters) {
         transitions[edge].insert(c);
     }
 
-    neighbours[edge.first].insert(edge.second);
+    addState(edge.first);
+    addState(edge.second);
+
+    updateNeighbours();
 }
 
 void Automaton::printInfo() const {
@@ -110,9 +114,9 @@ void Automaton::printInfo() const {
         std::cout << finalState << " ";
     }
 
-    std::cout << "\nTransitions: ";
+    std::cout << "\nTransitions:\n";
     for (auto transition : transitions) {
-        printf("From %d to %d | ", transition.first.first, transition.first.second);
+        printf("From %d to %d -> ", transition.first.first, transition.first.second);
         for (char letter : transition.second) {
             std::cout << letter << " ";
         }
@@ -121,8 +125,9 @@ void Automaton::printInfo() const {
 }
 
 bool Automaton::recognize(const std::string& str) const {
-    for (int beginningState: beginningStates) {
-        for (int finalState: finalStates) {
+    Automaton automatonToWorkWith = *this;
+    automatonToWorkWith.determine();
+    for (int beginningState: automatonToWorkWith.beginningStates) {
             std::string currentWord = ""; 
             std::vector<int> path;
 
@@ -131,43 +136,52 @@ bool Automaton::recognize(const std::string& str) const {
             int current = beginningState;
 
             dfsStack.push({current, current});
-            
+
             while(!dfsStack.empty())
             {
                 Edge top = dfsStack.top();
                 dfsStack.pop();
-            
 
                 while(!path.empty() && path[path.size()-1] != top.first) {
                     path.pop_back();
+                    if (automatonToWorkWith.transitions.count(top) > 0 && automatonToWorkWith.transitions.at(top).count(EPSILON) == 0) {
+                        currentWord.pop_back();
+                    }
                 }
 
                 path.push_back(top.second);
+                if (automatonToWorkWith.transitions.count(top) > 0 && automatonToWorkWith.transitions.at(top).count(EPSILON) == 0) {
+                    currentWord.push_back(str[currentWord.size()]);
+                }
 
-                for (int vert : neighbours.at(top.second)) { 
-                        dfsStack.push({top.second, vert});
+                if (currentWord == str && automatonToWorkWith.finalStates.count(top.second) > 0) return true;
+
+                for (int vert : automatonToWorkWith.neighbours.at(top.second)) { 
+                    if (automatonToWorkWith.transitions.at(std::make_pair(top.second, vert)).count(str[currentWord.size()]) > 0 
+                        || automatonToWorkWith.transitions.at(std::make_pair(top.second, vert)).count(EPSILON) > 0 
+                        || automatonToWorkWith.transitions.at(std::make_pair(top.second, vert)).count('?') > 0) {
+
+                        dfsStack.push(std::make_pair(top.second, vert));
+                    
                     }
-                
+                }
             }
-
-
-        }
     }
     return false;
 }
 
-Automaton Automaton::aUnion(const Automaton& other) {
-    Automaton newAutomaton = *this;
+Automaton Automaton::un(const Automaton& first, const Automaton& second) {
+    Automaton newAutomaton = first;
     
     int firstLastState = *(--newAutomaton.getStates().end());
 
-    for(int secondState : other.getStates()) {
+    for(int secondState : second.getStates()) {
         newAutomaton.addState(secondState + firstLastState);
-        if (other.beginningStates.count(secondState) != 0) newAutomaton.addBeginningState(secondState + firstLastState);
-        if (other.finalStates.count(secondState) != 0) newAutomaton.addFinalState(secondState + firstLastState);
+        if (second.beginningStates.count(secondState) != 0) newAutomaton.addBeginningState(secondState + firstLastState);
+        if (second.finalStates.count(secondState) != 0) newAutomaton.addFinalState(secondState + firstLastState);
     }
 
-    for (auto it : other.getTransitions()) {
+    for (auto it : second.getTransitions()) {
         newAutomaton.addTransition(std::make_pair(it.first.first + firstLastState, it.first.second + firstLastState), it.second);
     }
 
@@ -185,25 +199,66 @@ Automaton Automaton::aUnion(const Automaton& other) {
     return newAutomaton;
 }
 
-Automaton Automaton::aConcat(const Automaton& other) {
+Automaton::TransitionLetters Automaton::getCommonLetters (const TransitionLetters first, const TransitionLetters second) {
+    TransitionLetters common;
+    for (char firstTransition : first) {
+        if (second.count(firstTransition) > 0) common.insert(firstTransition);
+    }
+    return common;
+}
+
+Automaton Automaton::intersection(const Automaton& first, const Automaton& second) {
+    std::set<std::pair<int, int>> newStates;
+    for (int first : first.states) {
+        for (int second : second.states) {
+            newStates.insert(std::make_pair(first,second));
+        }
+    }
+
     Automaton newAutomaton;
-    newAutomaton.setStates(this -> getStates());
-    newAutomaton.setBeginningStates(this -> getBeginningStates());
-    newAutomaton.setTransitions(this -> getTransitions());
+    int stateN1 = 0, stateN2 = 0; 
+    for (std::pair<int, int> firstState : newStates) {
+        stateN1++;
+        if (first.beginningStates.count(firstState.first) > 0 && second.beginningStates.count(firstState.second) > 0) {
+            newAutomaton.addBeginningState(stateN1);
+        }
+        if (first.finalStates.count(firstState.first) > 0 && second.finalStates.count(firstState.second) > 0) {
+            newAutomaton.addFinalState(stateN1);
+        }
+        for (std::pair<int, int> secondState : newStates ) {
+            stateN2++;
+            if (firstState != secondState) {
+                TransitionLetters commonLetters = getCommonLetters(first.transitions.at(std::make_pair(firstState.first, secondState.first)), second.transitions.at(std::make_pair(firstState.second, secondState.second)));
+                if (commonLetters.size() > 0) {
+                    newAutomaton.addTransition(std::make_pair(stateN1, stateN2), commonLetters);
+                }
+            }
+        }
+        stateN2 = 0;
+    }
+    
+    return newAutomaton;
+}
+
+Automaton Automaton::concat(const Automaton& first, const Automaton& second) {
+    Automaton newAutomaton;
+    newAutomaton.setStates(first.getStates());
+    newAutomaton.setBeginningStates(first.getBeginningStates());
+    newAutomaton.setTransitions(first.getTransitions());
 
     int firstLastState = *(--newAutomaton.getStates().end());
 
-    for(int secondState : other.getStates()) {
+    for(int secondState : second.getStates()) {
         newAutomaton.addState(secondState + firstLastState);
-        if (other.getFinalStates().count(secondState) != 0) newAutomaton.addFinalState(secondState + firstLastState);
+        if (second.getFinalStates().count(secondState) != 0) newAutomaton.addFinalState(secondState + firstLastState);
     }
 
-    for(auto transition : other.getTransitions()) {
+    for(auto transition : second.getTransitions()) {
         newAutomaton.addTransition(std::make_pair(transition.first.first + firstLastState, transition.first.second + firstLastState), transition.second);   
     }
 
-    for(int firstEndingState : this -> getFinalStates()) {
-        for(int secondBeginningState : other.getBeginningStates()) {
+    for(int firstEndingState : first.getFinalStates()) {
+        for(int secondBeginningState : second.getBeginningStates()) {
             newAutomaton.addTransition(std::make_pair(firstEndingState, secondBeginningState + firstLastState), {EPSILON});
         }   
     }
@@ -211,8 +266,35 @@ Automaton Automaton::aConcat(const Automaton& other) {
     return newAutomaton;
 }
 
-Automaton Automaton::aComplement(const Automaton& other) {
+Automaton Automaton::complement(const Automaton& automaton) {
+    Automaton newAutomaton = automaton;
+    std::set<int> newFinalStates;
 
+    for (int i : automaton.states) {
+        if (automaton.finalStates.count(i) == 0) {
+            newFinalStates.insert(i);
+        }
+    }
+
+    newAutomaton.setFinalStates(newFinalStates);
+    return newAutomaton;
+}
+
+Automaton Automaton::iteration(const Automaton& automaton) {
+    Automaton newAutomaton = automaton;
+
+    for (int finalState : newAutomaton.finalStates) {
+        for (int beginningState : newAutomaton.beginningStates) {
+            if (newAutomaton.neighbours.at(finalState).count(beginningState) == 0) {
+                newAutomaton.addTransition(std::make_pair(finalState, beginningState), {EPSILON});
+            }
+            if (newAutomaton.finalStates.count(beginningState) == 0) {
+                newAutomaton.addFinalState(beginningState);
+            }
+        }
+    }
+
+    return newAutomaton;
 }
 
 std::set<char> Automaton::getAlphabet() const {
@@ -244,7 +326,7 @@ bool Automaton::containsInMainColumn(std::vector<std::vector<std::set<int>>> gri
     return false;
 }
 
-void Automaton::determinite() {
+void Automaton::determine() {
     std::set<char> alphabet = getAlphabet();
     std::vector<std::vector<std::set<int>>> grid;
 
@@ -316,4 +398,54 @@ void Automaton::determinite() {
     }
 
     *this = newAutomaton;
+}
+
+void Automaton::readRegex(std::string regex) {
+    std::stringstream toShuntingYard;
+    toShuntingYard << regex;
+    Tokenizer t1(toShuntingYard);
+
+    std::stringstream toEval;
+    toEval << RegexUtils::shuntingYardAlgo(t1);
+    Tokenizer t2(toEval);
+
+    *this = RegexUtils::evaluateRegex(t2);
+}
+
+std::string Automaton::convertToRegex() const {
+    Automaton newAutomaton = *this;
+    newAutomaton.determine();
+
+    std::stringstream result;
+
+    std::set<int> fStates = newAutomaton.finalStates;
+    result << RegexUtils::automatonToRegex(newAutomaton, *newAutomaton.beginningStates.begin(), *fStates.begin(), newAutomaton.states.size() + 1);
+    fStates.erase(fStates.begin());
+
+    for (int finalState : fStates) {
+        result << "+" << RegexUtils::automatonToRegex(newAutomaton, *newAutomaton.beginningStates.begin(), finalState, newAutomaton.states.size() + 1);
+    }
+
+    return result.str();
+}
+
+
+Automaton& operator >> (Automaton& automaton, std::string& str) {
+    str = automaton.convertToRegex();
+    return automaton;
+}
+
+Automaton& operator << (Automaton& automaton, std::string& str) {
+    automaton.readRegex(str);
+    return automaton;
+}
+
+Automaton& operator >> (std::string& str, Automaton& automaton) {
+    str = automaton.convertToRegex();
+    return automaton;
+}
+
+Automaton& operator << (std::string& str, Automaton& automaton) {
+    automaton.readRegex(str);
+    return automaton;
 }
